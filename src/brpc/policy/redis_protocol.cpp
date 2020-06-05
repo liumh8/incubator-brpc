@@ -159,29 +159,27 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
             ctx = new RedisConnContext(rs);
             socket->reset_parsing_context(ctx);
         }
-        std::vector<butil::StringPiece> current_args;
+
+        std::vector<butil::StringPiece> args;
         butil::IOBufAppender appender;
         ParseError err = PARSE_OK;
-
-        err = ctx->parser.Consume(*source, &current_args, &ctx->arena);
-        if (err != PARSE_OK) {
-            return MakeParseError(err);
-        }
+        int commands = 0;
+        
         while (true) {
-            std::vector<butil::StringPiece> next_args;
-            err = ctx->parser.Consume(*source, &next_args, &ctx->arena);
+            err = ctx->parser.Consume(*source, &args, &ctx->arena);
             if (err != PARSE_OK) {
+                if (commands == 0) {
+                    return MakeParseError(err);
+                }
                 break;
             }
-            if (ConsumeCommand(ctx, current_args, false, &appender) != 0) {
+            ++commands;
+            if (ConsumeCommand(ctx, args, false, &appender) != 0) {
                 return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
             }
-            current_args.swap(next_args);
+            ctx->arena.clear();
         }
-        if (ConsumeCommand(ctx, current_args,
-                    true /*must be the last message*/, &appender) != 0) {
-            return MakeParseError(PARSE_ERROR_ABSOLUTELY_WRONG);
-        }
+
         butil::IOBuf sendbuf;
         appender.move_to(sendbuf);
         CHECK(!sendbuf.empty());
@@ -189,7 +187,6 @@ ParseResult ParseRedisMessage(butil::IOBuf* source, Socket* socket,
         wopt.ignore_eovercrowded = true;
         LOG_IF(WARNING, socket->Write(&sendbuf, &wopt) != 0)
             << "Fail to send redis reply";
-        ctx->arena.clear();
         return MakeParseError(err);
     } else {
         // NOTE(gejun): PopPipelinedInfo() is actually more contended than what
